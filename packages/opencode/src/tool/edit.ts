@@ -204,6 +204,7 @@ export const EditTool = Tool.define(
             },
             title: `${path.relative(instance.worktree, filePath)}`,
             output,
+            args: params,
           }
         }),
     }
