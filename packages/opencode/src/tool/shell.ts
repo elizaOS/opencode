@@ -613,7 +613,7 @@ export const ShellTool = Tool.define(
                 }),
               )
 
-              return yield* run(
+              const result = yield* run(
                 {
                   shell,
                   command: params.command,
@@ -624,6 +624,7 @@ export const ShellTool = Tool.define(
                 },
                 ctx,
               )
+              return { ...result, args: params }
             }),
         }
       })

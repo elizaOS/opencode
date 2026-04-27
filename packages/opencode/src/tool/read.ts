@@ -254,6 +254,7 @@ export const ReadTool = Tool.define(
             truncated,
             loaded: [] as string[],
           },
+          args: params,
         }
       }
 
@@ -281,6 +282,7 @@ export const ReadTool = Tool.define(
               url: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
             },
           ],
+          args: params,
         }
       }
 
@@ -324,6 +326,7 @@ export const ReadTool = Tool.define(
           truncated,
           loaded: loaded.map((item) => item.filepath),
         },
+        args: params,
       }
     })
 
