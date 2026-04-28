@@ -1585,6 +1585,17 @@ const layer = Layer.effect(
             ...model.headers,
           }
 
+        if (!model.providerID.startsWith("opencode")) {
+          const headers: Record<string, string> = { ...((options["headers"] as Record<string, string>) ?? {}) }
+          const userKey = Object.keys(headers).find((k) => k.toLowerCase() === "user-agent")
+          const userUA = userKey ? headers[userKey] : undefined
+          if (userKey) delete headers[userKey]
+          options["headers"] = {
+            ...headers,
+            "User-Agent": userUA ? `opencode/${InstallationVersion} ${userUA}` : `opencode/${InstallationVersion}`,
+          }
+        }
+
         const key = Hash.fast(
           JSON.stringify({
             providerID: model.providerID,
