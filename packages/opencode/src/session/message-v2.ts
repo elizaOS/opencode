@@ -1143,6 +1143,11 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    // Convert APIError class instances thrown via `Effect.fail(new APIError(...))`
+    // to their wire form so the TUI receives the structured message and metadata
+    // instead of being wrapped by the generic Error fallback below.
+    case APIError.isInstance(e):
+      return e instanceof Error ? e.toObject() : e
     case e instanceof Error:
       return new NamedError.Unknown({ message: errorMessage(e) }, { cause: e }).toObject()
     default:
