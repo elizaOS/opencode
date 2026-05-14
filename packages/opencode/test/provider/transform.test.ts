@@ -1264,9 +1264,24 @@ describe("ProviderTransform.message - Cerebras reasoning replay", () => {
     const msgs = [
       {
         role: "assistant",
+        providerOptions: {
+          openaiCompatible: {
+            reasoning_content: "stale SDK replay",
+            keep: "safe",
+          },
+        },
         content: [
           { type: "reasoning", text: "First, I should think it through." },
-          { type: "text", text: "Answer" },
+          {
+            type: "text",
+            text: "Answer",
+            providerOptions: {
+              openaiCompatible: {
+                reasoning_details: "stale part replay",
+                keepPart: "safe",
+              },
+            },
+          },
         ],
       },
     ] as any[]
@@ -1289,7 +1304,9 @@ describe("ProviderTransform.message - Cerebras reasoning replay", () => {
           toolcall: true,
           input: { text: true, audio: false, image: false, video: false, pdf: false },
           output: { text: true, audio: false, image: false, video: false, pdf: false },
-          interleaved: false,
+          interleaved: {
+            field: "reasoning_content",
+          },
         },
         cost: {
           input: 0.001,
@@ -1310,9 +1327,147 @@ describe("ProviderTransform.message - Cerebras reasoning replay", () => {
 
     expect(result[0].content).toEqual([
       { type: "text", text: "First, I should think it through." },
-      { type: "text", text: "Answer" },
+      {
+        type: "text",
+        text: "Answer",
+        providerOptions: {
+          openaiCompatible: {
+            keepPart: "safe",
+          },
+        },
+      },
     ])
     expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBeUndefined()
+    expect(result[0].providerOptions?.openaiCompatible?.keep).toBe("safe")
+  })
+
+  test("custom OpenAI-compatible Cerebras endpoints strip reasoning replay fields", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        providerOptions: {
+          openaiCompatible: {
+            reasoning_content: "old reasoning",
+            keep: "safe",
+          },
+        },
+        content: [
+          { type: "reasoning", text: "Use the routed app directory." },
+          {
+            type: "tool-call",
+            toolCallId: "test",
+            toolName: "bash",
+            input: { command: "pwd" },
+          },
+          { type: "text", text: "Continuing." },
+        ],
+      },
+    ] as any[]
+
+    const result = ProviderTransform.message(
+      msgs,
+      {
+        id: ModelID.make("eliza-cerebras/gpt-oss-120b"),
+        providerID: ProviderID.make("eliza-cerebras"),
+        api: {
+          id: "gpt-oss-120b",
+          url: "https://api.cerebras.ai/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        name: "GPT OSS 120B",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: {
+            field: "reasoning_content",
+          },
+        },
+        cost: {
+          input: 0.001,
+          output: 0.002,
+          cache: { read: 0.0001, write: 0.0002 },
+        },
+        limit: {
+          context: 128000,
+          output: 4096,
+        },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2025-08-05",
+      },
+      {},
+    )
+
+    expect(result[0].content).toEqual([
+      { type: "text", text: "Use the routed app directory." },
+      {
+        type: "tool-call",
+        toolCallId: "test",
+        toolName: "bash",
+        input: { command: "pwd" },
+      },
+      { type: "text", text: "Continuing." },
+    ])
+    expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBeUndefined()
+    expect(result[0].providerOptions?.openaiCompatible?.reasoning_details).toBeUndefined()
+    expect(result[0].providerOptions?.openaiCompatible?.keep).toBe("safe")
+  })
+
+  test("custom OpenAI-compatible Cerebras endpoints fold serialized top-level reasoning replay", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        reasoning_content: "Create the remaining files before verifying.",
+        content: "",
+      },
+    ] as any[]
+
+    const result = ProviderTransform.message(
+      msgs,
+      {
+        id: ModelID.make("eliza-cerebras/gpt-oss-120b"),
+        providerID: ProviderID.make("eliza-cerebras"),
+        api: {
+          id: "gpt-oss-120b",
+          url: "https://api.cerebras.ai/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        name: "GPT OSS 120B",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: {
+            field: "reasoning_content",
+          },
+        },
+        cost: {
+          input: 0.001,
+          output: 0.002,
+          cache: { read: 0.0001, write: 0.0002 },
+        },
+        limit: {
+          context: 128000,
+          output: 4096,
+        },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2025-08-05",
+      },
+      {},
+    )
+
+    expect(result[0].content).toBe("Create the remaining files before verifying.")
+    expect((result[0] as any).reasoning_content).toBeUndefined()
   })
 })
 
