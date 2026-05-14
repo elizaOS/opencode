@@ -37,6 +37,22 @@ function shouldUseCopilotResponsesApi(modelID: string): boolean {
   return Number(match[1]) >= 5 && !modelID.startsWith("gpt-5-mini")
 }
 
+function defaultOpenAICompatibleInterleaved(
+  apiNpm: string,
+  apiID: string,
+  reasoning: boolean,
+): false | { field: "reasoning_content" } {
+  if (apiNpm !== "@ai-sdk/openai-compatible" || !reasoning) return false
+
+  const id = apiID.toLowerCase()
+  const usesReasoningContent =
+    id.includes("deepseek") ||
+    id.includes("kimi") ||
+    /(^|[/:])glm-(4\.7|5(?:\.1)?|5v)(?:[^a-z0-9]|$)/.test(id)
+
+  return usesReasoningContent ? { field: "reasoning_content" } : false
+}
+
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
   if (!res.body) return res
@@ -1271,6 +1287,13 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
+            const reasoning = model.reasoning ?? existingModel?.capabilities.reasoning ?? false
+            const defaultInterleaved = defaultOpenAICompatibleInterleaved(apiNpm, apiID, reasoning)
+            const interleaved =
+              model.interleaved ??
+              (existingModel?.capabilities.interleaved && existingModel.capabilities.interleaved !== false
+                ? existingModel.capabilities.interleaved
+                : defaultInterleaved)
             const parsedModel: Model = {
               id: ModelID.make(modelID),
               api: {
@@ -1283,7 +1306,7 @@ const layer = Layer.effect(
               providerID: ProviderID.make(providerID),
               capabilities: {
                 temperature: model.temperature ?? existingModel?.capabilities.temperature ?? false,
-                reasoning: model.reasoning ?? existingModel?.capabilities.reasoning ?? false,
+                reasoning,
                 attachment: model.attachment ?? existingModel?.capabilities.attachment ?? false,
                 toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? true,
                 input: {
@@ -1303,12 +1326,7 @@ const layer = Layer.effect(
                     model.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
                   pdf: model.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
                 },
-                interleaved:
-                  model.interleaved ??
-                  existingModel?.capabilities.interleaved ??
-                  (!existingModel && apiNpm === "@ai-sdk/openai-compatible" && apiID.includes("deepseek")
-                    ? { field: "reasoning_content" }
-                    : false),
+                interleaved,
               },
               cost: {
                 input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
