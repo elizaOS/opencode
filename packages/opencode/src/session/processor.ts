@@ -78,6 +78,8 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: MessageV2.TextPart | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
+  // partIDs created during the current attempt; cleared on retry.
+  attemptParts: PartID[]
 }
 
 type StreamEvent = Event
@@ -134,6 +136,7 @@ export const layer: Layer.Layer<
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        attemptParts: [],
       }
       let aborted = false
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
@@ -251,6 +254,7 @@ export const layer: Layer.Layer<
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
+            ctx.attemptParts.push(ctx.reasoningMap[value.id].id)
             yield* session.updatePart(ctx.reasoningMap[value.id])
             return
 
@@ -601,6 +605,7 @@ export const layer: Layer.Layer<
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
+            ctx.attemptParts.push(ctx.currentText.id)
             yield* session.updatePart(ctx.currentText)
             return
 
@@ -656,6 +661,24 @@ export const layer: Layer.Layer<
             slog.info("unhandled", { event: value.type, value })
             return
         }
+      })
+
+      // Discards parts persisted during the failed attempt so a successful
+      // retry replaces rather than appends to the truncated content.
+      const discardAttempt = Effect.fn("SessionProcessor.discardAttempt")(function* () {
+        for (const partID of ctx.attemptParts) {
+          yield* session
+            .removePart({
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              partID,
+            })
+            .pipe(Effect.ignore)
+        }
+        ctx.attemptParts = []
+        ctx.currentText = undefined
+        ctx.reasoningMap = {}
+        ctx.snapshot = undefined
       })
 
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
@@ -793,7 +816,8 @@ export const layer: Layer.Layer<
                         timestamp: DateTime.makeUnsafe(Date.now()),
                       })
                     : Effect.void
-                  return event.pipe(
+                  return discardAttempt().pipe(
+                    Effect.andThen(event),
                     Effect.andThen(
                       status.set(ctx.sessionID, {
                         type: "retry",
