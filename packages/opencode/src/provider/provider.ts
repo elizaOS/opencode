@@ -1626,10 +1626,10 @@ const layer = Layer.effect(
         ]
 
         let isIncompatible = false
-        const baseURL = typeof options["baseURL"] === "string" ? options["baseURL"] : model.api.url
-        if (baseURL) {
+        const rawBaseURL = typeof options["baseURL"] === "string" ? options["baseURL"] : model.api.url
+        if (rawBaseURL) {
           try {
-            const host = new URL(baseURL).host.toLowerCase()
+            const host = new URL(rawBaseURL).host.toLowerCase()
             isIncompatible = incompatibleHosts.some((h) => host === h || host.endsWith(`.${h}`))
           } catch {
             // ignore invalid URLs
