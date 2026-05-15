@@ -8,6 +8,7 @@ import type {
   ToolStatePending,
   ToolStateRunning,
 } from "@opencode-ai/sdk/v2"
+import { WithInstance } from "../../src/project/with-instance"
 import { provideTestInstance, tmpdir } from "../fixture/fixture"
 
 type SessionUpdateParams = Parameters<AgentSideConnection["sessionUpdate"]>[0]
