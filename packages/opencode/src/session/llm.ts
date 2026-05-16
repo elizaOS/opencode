@@ -382,11 +382,14 @@ const live: Layer.Layer<
             {
               specificationVersion: "v3" as const,
               async transformParams(args) {
-                if (args.type === "stream") {
-                  // @ts-expect-error
-                  args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
+                const params = args.params as any
+                if (Array.isArray(params.prompt)) {
+                  params.prompt = ProviderTransform.message(params.prompt, input.model, options)
                 }
-                return args.params
+                if (Array.isArray(params.messages)) {
+                  params.messages = ProviderTransform.message(params.messages, input.model, options)
+                }
+                return params
               },
             },
           ],

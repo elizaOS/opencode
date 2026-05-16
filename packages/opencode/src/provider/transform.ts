@@ -62,6 +62,76 @@ function toolResultsAsUser(model: Provider.Model, options: Record<string, unknow
   return id.includes("qwen") || id.includes("qwq")
 }
 
+const REASONING_REPLAY_FIELDS = ["reasoning_content", "reasoning_details"] as const
+
+function isCerebrasCompatibleEndpoint(model: Provider.Model) {
+  if (model.api.npm === "@ai-sdk/cerebras") return true
+  const providerID = model.providerID.toLowerCase()
+  const apiURL = model.api.url.toLowerCase()
+  return providerID.includes("cerebras") || apiURL.includes("cerebras")
+}
+
+function cerebrasReasoningText(text: string, model: Provider.Model) {
+  return model.api.id.toLowerCase().includes("gpt-oss") ? text : `<think>${text}</think>`
+}
+
+function reasoningReplayText(value: unknown): string {
+  if (typeof value === "string") return value
+  if (Array.isArray(value)) return value.map(reasoningReplayText).join("")
+  if (!value || typeof value !== "object") return ""
+  const entry = value as Record<string, unknown>
+  if (typeof entry.text === "string") return entry.text
+  if (typeof entry.content === "string") return entry.content
+  if (typeof entry.reasoning === "string") return entry.reasoning
+  return ""
+}
+
+function topLevelReasoningReplayText(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return ""
+  const entry = value as Record<string, unknown>
+  return REASONING_REPLAY_FIELDS.map((field) => reasoningReplayText(entry[field])).join("")
+}
+
+function stripReasoningReplayFields<T>(value: T, model: Provider.Model): T {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
+  let changed = false
+  const result: Record<string, any> = { ...(value as Record<string, any>) }
+
+  for (const field of REASONING_REPLAY_FIELDS) {
+    if (field in result) {
+      delete result[field]
+      changed = true
+    }
+  }
+
+  const providerOptions = result.providerOptions
+  if (!providerOptions) return changed ? (result as T) : value
+
+  const optionKeys = unique(["openaiCompatible", "openai-compatible", model.providerID])
+  const nextProviderOptions: Record<string, any> = { ...providerOptions }
+
+  for (const optionKey of optionKeys) {
+    const options = nextProviderOptions[optionKey]
+    if (!options || typeof options !== "object" || Array.isArray(options)) continue
+
+    const nextOptions: Record<string, unknown> = { ...options }
+    for (const field of REASONING_REPLAY_FIELDS) {
+      if (field in nextOptions) {
+        delete nextOptions[field]
+        changed = true
+      }
+    }
+
+    if (Object.keys(nextOptions).length === 0) delete nextProviderOptions[optionKey]
+    else nextProviderOptions[optionKey] = nextOptions
+  }
+
+  if (!changed) return value
+  if (Object.keys(nextProviderOptions).length === 0) delete result.providerOptions
+  else result.providerOptions = nextProviderOptions
+  return result as T
+}
+
 // Maps npm package to the key the AI SDK expects for providerOptions
 function sdkKey(npm: string): string | undefined {
   switch (npm) {
@@ -323,24 +393,35 @@ function normalizeMessages(
     return result
   }
 
-  if (model.api.npm === "@ai-sdk/cerebras") {
-    // @ai-sdk/openai-compatible replays reasoning parts as assistant.reasoning_content,
-    // but Cerebras expects prior reasoning to be folded back into assistant.content.
+  if (isCerebrasCompatibleEndpoint(model)) {
+    // Cerebras-compatible endpoints reject OpenAI-compatible reasoning replay
+    // fields on prior assistant messages. Fold useful reasoning back into
+    // content and strip replay providerOptions before the SDK serializes them.
     msgs = msgs.map((msg) => {
-      if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg
-      return {
-        ...msg,
-        content: msg.content.flatMap((part) => {
-          if (part.type !== "reasoning") return [part]
-          if (part.text.length === 0) return []
-          return [
-            {
-              type: "text" as const,
-              text: model.api.id.toLowerCase().includes("gpt-oss") ? part.text : `<think>${part.text}</think>`,
-            },
-          ]
-        }),
+      if (msg.role !== "assistant") return msg
+      const replayText = topLevelReasoningReplayText(msg)
+      const stripped = stripReasoningReplayFields(msg, model)
+      if (!Array.isArray(stripped.content)) {
+        if (!replayText) return stripped
+        const folded = cerebrasReasoningText(replayText, model)
+        const existing = typeof stripped.content === "string" ? stripped.content : ""
+        return {
+          ...stripped,
+          content: existing.trim() ? `${folded}\n${existing}` : folded,
+        } as ModelMessage
       }
+      const content = stripped.content.flatMap((part: any) => {
+        if (part.type !== "reasoning") return [stripReasoningReplayFields(part, model)]
+        if (part.text.length === 0) return []
+        return [{ type: "text" as const, text: cerebrasReasoningText(part.text, model) }]
+      })
+      if (replayText) {
+        content.unshift({ type: "text" as const, text: cerebrasReasoningText(replayText, model) })
+      }
+      return {
+        ...stripped,
+        content,
+      } as ModelMessage
     })
   }
 
@@ -371,7 +452,8 @@ function normalizeMessages(
     !shouldStripReasoningContent &&
     typeof model.capabilities.interleaved === "object" &&
     model.capabilities.interleaved.field &&
-    model.api.npm !== "@openrouter/ai-sdk-provider"
+    model.api.npm !== "@openrouter/ai-sdk-provider" &&
+    !isCerebrasCompatibleEndpoint(model)
   ) {
     const field = model.capabilities.interleaved.field
     return msgs.map((msg) => {
