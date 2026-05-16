@@ -1,5 +1,6 @@
 import os from "os"
 import fuzzysort from "fuzzysort"
+import { Agent as UndiciAgent } from "undici"
 import { Config } from "@/config/config"
 import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
 import { NoSuchModelError, type Provider as SDK } from "ai"
@@ -30,10 +31,96 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const log = Log.create({ service: "provider" })
 
+const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] as const
+const noProxyKeys = ["NO_PROXY", "no_proxy"] as const
+
+function privateIPv4(hostname: string) {
+  const match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(hostname)
+  if (!match) return false
+
+  const a = Number.parseInt(match[1], 10)
+  const b = Number.parseInt(match[2], 10)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  if (a === 10 || a === 127) return true
+  if (a === 192 && b === 168) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 169 && b === 254) return true
+  return false
+}
+
+function privateIPv6(hostname: string) {
+  const host = hostname.toLowerCase()
+  if (host === "::1") return true
+  if (host.startsWith("fc") || host.startsWith("fd")) return true
+  if (host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb"))
+    return true
+  return false
+}
+
+function bypassProxy(hostname: string) {
+  if (hostname === "localhost") return true
+  if (!hostname.includes(".")) return true
+  if (hostname.endsWith(".local")) return true
+  if (privateIPv4(hostname)) return true
+  if (privateIPv6(hostname)) return true
+  return false
+}
+
+function coveredByNoProxy(hostname: string, item: string) {
+  const next = item.trim().toLowerCase()
+  if (!next) return false
+  if (next === "*" || next === hostname) return true
+  if (!next.startsWith(".")) return false
+  return hostname.endsWith(next)
+}
+
+export function ensureNoProxyForBaseURL(baseURL: string | undefined) {
+  if (!baseURL) return
+  if (!proxyKeys.some((key) => Boolean(process.env[key]))) return
+
+  let url: URL
+  try {
+    url = new URL(baseURL)
+  } catch {
+    return
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") return
+
+  const hostname = url.hostname.trim().toLowerCase()
+  if (!hostname || !bypassProxy(hostname)) return
+
+  for (const key of noProxyKeys) {
+    const existing = (process.env[key] ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+
+    if (existing.some((item) => coveredByNoProxy(hostname, item))) continue
+    process.env[key] = [...existing, hostname].join(",")
+  }
+}
+
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
   if (!match) return false
   return Number(match[1]) >= 5 && !modelID.startsWith("gpt-5-mini")
+}
+
+function defaultOpenAICompatibleInterleaved(
+  apiNpm: string,
+  apiID: string,
+  reasoning: boolean,
+): false | { field: "reasoning_content" } {
+  if (apiNpm !== "@ai-sdk/openai-compatible" || !reasoning) return false
+
+  const id = apiID.toLowerCase()
+  const usesReasoningContent =
+    id.includes("deepseek") ||
+    id.includes("kimi") ||
+    /(^|[/:])glm-(4\.7|5(?:\.1)?|5v)(?:[^a-z0-9]|$)/.test(id)
+
+  return usesReasoningContent ? { field: "reasoning_content" } : false
 }
 
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
@@ -81,6 +168,23 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
     headers: new Headers(res.headers),
     status: res.status,
     statusText: res.statusText,
+  })
+}
+
+function toUndiciTimeout(value: unknown) {
+  if (value === false) return 0
+  if (typeof value === "number" && value > 0) return value
+  return undefined
+}
+
+function createUndiciDispatcher(timeout: unknown) {
+  if (typeof process !== "object" || (process.versions as Record<string, string | undefined>).bun) return undefined
+
+  const headersTimeout = toUndiciTimeout(timeout)
+  if (headersTimeout === undefined) return undefined
+
+  return new UndiciAgent({
+    headersTimeout,
   })
 }
 
@@ -1281,6 +1385,13 @@ export const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
+            const reasoning = model.reasoning ?? existingModel?.capabilities.reasoning ?? false
+            const defaultInterleaved = defaultOpenAICompatibleInterleaved(apiNpm, apiID, reasoning)
+            const interleaved =
+              model.interleaved ??
+              (existingModel?.capabilities.interleaved && existingModel.capabilities.interleaved !== false
+                ? existingModel.capabilities.interleaved
+                : defaultInterleaved)
             const parsedModel: Model = {
               id: ModelID.make(modelID),
               api: {
@@ -1293,7 +1404,7 @@ export const layer = Layer.effect(
               providerID: ProviderID.make(providerID),
               capabilities: {
                 temperature: model.temperature ?? existingModel?.capabilities.temperature ?? false,
-                reasoning: model.reasoning ?? existingModel?.capabilities.reasoning ?? false,
+                reasoning,
                 attachment: model.attachment ?? existingModel?.capabilities.attachment ?? false,
                 toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? true,
                 input: {
@@ -1313,12 +1424,7 @@ export const layer = Layer.effect(
                     model.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
                   pdf: model.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
                 },
-                interleaved:
-                  model.interleaved ??
-                  existingModel?.capabilities.interleaved ??
-                  (!existingModel && apiNpm === "@ai-sdk/openai-compatible" && apiID.includes("deepseek")
-                    ? { field: "reasoning_content" }
-                    : false),
+                interleaved,
               },
               cost: {
                 input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
@@ -1517,8 +1623,35 @@ export const layer = Layer.effect(
           delete options.fetch
         }
 
-        if (model.api.npm.includes("@ai-sdk/openai-compatible") && options["includeUsage"] !== false) {
-          options["includeUsage"] = true
+        const incompatibleHosts = [
+          "api.xiaomimimo.com",
+          "open.bigmodel.cn",
+          "dashscope.aliyuncs.com",
+          "qianfan.baidubce.com",
+          "api.minimax.io",
+          "ark.cn-beijing.volces.com",
+          "api.lkeap.cloud.tencent.com",
+          "api-ai.gitcode.com",
+          "api-inference.modelscope.cn",
+        ]
+
+        let isIncompatible = false
+        const rawBaseURL = typeof options["baseURL"] === "string" ? options["baseURL"] : model.api.url
+        if (rawBaseURL) {
+          try {
+            const host = new URL(rawBaseURL).host.toLowerCase()
+            isIncompatible = incompatibleHosts.some((h) => host === h || host.endsWith(`.${h}`))
+          } catch {
+            // ignore invalid URLs
+          }
+        }
+
+        if (model.api.npm.includes("@ai-sdk/openai-compatible")) {
+          if ("includeUsage" in options) {
+            if (options["includeUsage"] !== false) options["includeUsage"] = true
+          } else if (!isIncompatible) {
+            options["includeUsage"] = true
+          }
         }
 
         const baseURL = iife(() => {
@@ -1542,13 +1675,27 @@ export const layer = Layer.effect(
           return url
         })
 
-        if (baseURL !== undefined) options["baseURL"] = baseURL
+        if (baseURL !== undefined) {
+          options["baseURL"] = baseURL
+          ensureNoProxyForBaseURL(baseURL)
+        }
         if (options["apiKey"] === undefined && provider.key) options["apiKey"] = provider.key
         if (model.headers)
           options["headers"] = {
             ...options["headers"],
             ...model.headers,
           }
+
+        if (!model.providerID.startsWith("opencode")) {
+          const headers: Record<string, string> = { ...((options["headers"] as Record<string, string>) ?? {}) }
+          const userKey = Object.keys(headers).find((k) => k.toLowerCase() === "user-agent")
+          const userUA = userKey ? headers[userKey] : undefined
+          if (userKey) delete headers[userKey]
+          options["headers"] = {
+            ...headers,
+            "User-Agent": userUA ? `opencode/${InstallationVersion} ${userUA}` : `opencode/${InstallationVersion}`,
+          }
+        }
 
         const key = Hash.fast(
           JSON.stringify({
@@ -1563,6 +1710,7 @@ export const layer = Layer.effect(
         const customFetch = options["fetch"]
         const chunkTimeout = options["chunkTimeout"]
         delete options["chunkTimeout"]
+        const dispatcher = customFetch ? undefined : createUndiciDispatcher(options["timeout"])
 
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch
@@ -1595,12 +1743,18 @@ export const layer = Layer.effect(
               opts.body = JSON.stringify(body)
             }
           }
+          if (model.api.npm === "@ai-sdk/openai-compatible" && opts.body && opts.method === "POST") {
+            const body = JSON.parse(opts.body as string)
+            const transformed = ProviderTransform.openaiCompatibleBody(model, body)
+            if (transformed !== body) opts.body = JSON.stringify(transformed)
+          }
 
           const res = await fetchFn(input, {
             ...opts,
+            ...(dispatcher ? { dispatcher } : {}),
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
-          })
+          } as BunFetchRequestInit)
 
           if (!chunkAbortCtl) return res
           return wrapSSE(res, chunkTimeout, chunkAbortCtl)

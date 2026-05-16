@@ -584,13 +584,20 @@ const info = (row: typeof MessageTable.$inferSelect) =>
     sessionID: row.session_id,
   }) as Info
 
-const part = (row: typeof PartTable.$inferSelect) =>
-  ({
+const part = (row: typeof PartTable.$inferSelect) => {
+  // Backwards compat: coerce numeric tool call IDs from non-compliant providers
+  // stored before the fetch-level fix
+  const data = row.data as Record<string, unknown>
+  if (data.type === "tool" && typeof data.callID === "number") {
+    data.callID = String(data.callID)
+  }
+  return {
     ...row.data,
     id: row.id,
     sessionID: row.session_id,
     messageID: row.message_id,
-  }) as Part
+  } as Part
+}
 
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
@@ -1168,6 +1175,11 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    // Convert APIError class instances thrown via `Effect.fail(new APIError(...))`
+    // to their wire form so the TUI receives the structured message and metadata
+    // instead of being wrapped by the generic Error fallback below.
+    case APIError.isInstance(e):
+      return e instanceof Error ? e.toObject() : e
     case e instanceof Error:
       return new NamedError.Unknown({ message: errorMessage(e) }, { cause: e }).toObject()
     default:

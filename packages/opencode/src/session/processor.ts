@@ -11,6 +11,7 @@ import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 import { Image } from "@/image/image"
 import { isOverflow } from "./overflow"
+import { Token } from "@/util/token"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
@@ -79,6 +80,8 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: MessageV2.TextPart | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
+  // partIDs created during the current attempt; cleared on retry.
+  attemptParts: PartID[]
 }
 
 type StreamEvent = Event
@@ -119,6 +122,7 @@ export const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        attemptParts: [],
       }
       let aborted = false
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
@@ -236,6 +240,7 @@ export const layer = Layer.effect(
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
+            ctx.attemptParts.push(ctx.reasoningMap[value.id].id)
             yield* session.updatePart(ctx.reasoningMap[value.id])
             return
 
@@ -497,6 +502,20 @@ export const layer = Layer.effect(
               usage: value.usage,
               metadata: value.providerMetadata,
             })
+            // Detect stream truncation: AI SDK reports finishReason="other" when
+            // the upstream provider stream ends without a proper stop_reason
+            // (initialised default in @ai-sdk/anthropic + ai SDK flush fallback).
+            // No usage and no output means the connection was cut mid-generation,
+            // which is a transient failure that should be retried.
+            if (value.finishReason === "other" && usage.tokens.output === 0) {
+              return yield* Effect.fail(
+                new MessageV2.APIError({
+                  message: "Provider stream ended without a stop reason",
+                  isRetryable: true,
+                  metadata: { code: "EmptyOther" },
+                }),
+              )
+            }
             if (!ctx.assistantMessage.summary) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               if (flags.experimentalEventSystem) {
@@ -572,6 +591,7 @@ export const layer = Layer.effect(
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
+            ctx.attemptParts.push(ctx.currentText.id)
             yield* session.updatePart(ctx.currentText)
             return
 
@@ -627,6 +647,24 @@ export const layer = Layer.effect(
             slog.info("unhandled", { event: value.type, value })
             return
         }
+      })
+
+      // Discards parts persisted during the failed attempt so a successful
+      // retry replaces rather than appends to the truncated content.
+      const discardAttempt = Effect.fn("SessionProcessor.discardAttempt")(function* () {
+        for (const partID of ctx.attemptParts) {
+          yield* session
+            .removePart({
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              partID,
+            })
+            .pipe(Effect.ignore)
+        }
+        ctx.attemptParts = []
+        ctx.currentText = undefined
+        ctx.reasoningMap = {}
+        ctx.snapshot = undefined
       })
 
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
@@ -724,6 +762,31 @@ export const layer = Layer.effect(
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {
+          // Proactive context overflow prevention.
+          // Estimates context usage from the messages being sent to the API
+          // BEFORE the stream starts. This catches overflow even when the
+          // provider doesn't report accurate token counts or silently accepts
+          // overflows (e.g., z.ai, some OpenAI-compatible providers).
+          // Skipped when the model doesn't report a context limit (0).
+          const contextLimit = input.model.limit.context
+          if (contextLimit > 0) {
+            const preStreamPayload = JSON.stringify([
+              ...(streamInput.system ?? []).map((s: unknown) => s),
+              ...streamInput.messages,
+            ])
+            const preStreamTokens = Token.estimate(preStreamPayload)
+            const compactionThreshold = Math.floor(contextLimit * 0.85)
+            if (preStreamTokens >= compactionThreshold) {
+              ctx.needsCompaction = true
+              slog.info("proactive compaction triggered", {
+                estimatedTokens: preStreamTokens,
+                threshold: compactionThreshold,
+                contextLimit,
+              })
+              return "compact" as const
+            }
+          }
+
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
@@ -764,7 +827,8 @@ export const layer = Layer.effect(
                         timestamp: DateTime.makeUnsafe(Date.now()),
                       })
                     : Effect.void
-                  return event.pipe(
+                  return discardAttempt().pipe(
+                    Effect.andThen(event),
                     Effect.andThen(
                       status.set(ctx.sessionID, {
                         type: "retry",

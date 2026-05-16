@@ -575,6 +575,27 @@ describe("ProviderTransform.providerOptions", () => {
       groq: { reasoningFormat: "parsed" },
     })
   })
+
+  test("does not send local stripReasoningContent option to providers", () => {
+    const model = createModel({
+      providerID: "lmstudio",
+      api: {
+        id: "qwen3.6-35b-a3b-mlx",
+        url: "http://127.0.0.1:1234/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+
+    expect(
+      ProviderTransform.providerOptions(model, {
+        stripReasoningContent: true,
+        toolResultsAsUser: true,
+        reasoningEffort: "medium",
+      }),
+    ).toEqual({
+      lmstudio: { reasoningEffort: "medium" },
+    })
+  })
 })
 
 describe("ProviderTransform.schema - gemini array items", () => {
@@ -1189,6 +1210,400 @@ describe("ProviderTransform.message - DeepSeek reasoning content", () => {
       { type: "text", text: "Answer" },
     ])
     expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBeUndefined()
+  })
+
+  test("LM Studio strips reasoning_content by default for stable prefix caching", () => {
+    const result = ProviderTransform.message(
+      [
+        {
+          role: "assistant",
+          content: [
+            { type: "reasoning", text: "This thinking should not be replayed" },
+            {
+              type: "tool-call",
+              toolCallId: "toolu_123",
+              toolName: "read",
+              input: { filePath: "/tmp/example.txt" },
+            },
+          ],
+        },
+      ] as any[],
+      {
+        id: ModelID.make("qwen3.6-35b-a3b-mlx"),
+        providerID: ProviderID.make("lmstudio"),
+        api: {
+          id: "qwen3.6-35b-a3b-mlx",
+          url: "http://127.0.0.1:1234/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        name: "Qwen 3.6 35B MLX",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: { field: "reasoning_content" },
+        },
+        cost: {
+          input: 0,
+          output: 0,
+          cache: { read: 0, write: 0 },
+        },
+        limit: {
+          context: 262144,
+          output: 8192,
+        },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2026-01-01",
+      },
+      {},
+    )
+
+    expect(result[0].content).toEqual([
+      {
+        type: "tool-call",
+        toolCallId: "toolu_123",
+        toolName: "read",
+        input: { filePath: "/tmp/example.txt" },
+      },
+    ])
+    expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBeUndefined()
+  })
+
+  test("LM Studio reasoning_content strip can be disabled", () => {
+    const result = ProviderTransform.message(
+      [
+        {
+          role: "assistant",
+          content: [
+            { type: "reasoning", text: "Keep this thinking" },
+            { type: "text", text: "Answer" },
+          ],
+        },
+      ] as any[],
+      {
+        id: ModelID.make("qwen3.6-35b-a3b-mlx"),
+        providerID: ProviderID.make("lmstudio"),
+        api: {
+          id: "qwen3.6-35b-a3b-mlx",
+          url: "http://127.0.0.1:1234/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        name: "Qwen 3.6 35B MLX",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: { field: "reasoning_content" },
+        },
+        cost: {
+          input: 0,
+          output: 0,
+          cache: { read: 0, write: 0 },
+        },
+        limit: {
+          context: 262144,
+          output: 8192,
+        },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2026-01-01",
+      },
+      { stripReasoningContent: false },
+    )
+
+    expect(result[0].content).toEqual([{ type: "text", text: "Answer" }])
+    expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBe("Keep this thinking")
+  })
+
+  test("LM Studio Qwen normalizes raw OpenAI-compatible body for stable prefix caching", () => {
+    const result = ProviderTransform.openaiCompatibleBody(
+      {
+        id: ModelID.make("qwen3.6-35b-a3b-mlx"),
+        providerID: ProviderID.make("lmstudio"),
+        api: {
+          id: "qwen3.6-35b-a3b-mlx",
+          url: "http://127.0.0.1:1234/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        name: "Qwen 3.6 35B MLX",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: { field: "reasoning_content" },
+        },
+        cost: {
+          input: 0,
+          output: 0,
+          cache: { read: 0, write: 0 },
+        },
+        limit: {
+          context: 262144,
+          output: 8192,
+        },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2026-01-01",
+      },
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: null,
+            reasoning_content: "Hidden thinking",
+            tool_calls: [
+              {
+                id: "toolu_123",
+                type: "function",
+                function: { name: "read", arguments: "{}" },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            tool_call_id: "toolu_123",
+            content: "<path>/tmp/example.txt</path>\n<content>Hello</content>",
+          },
+        ],
+      },
+    )
+
+    expect((result as any).messages).toEqual([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "toolu_123",
+            type: "function",
+            function: { name: "read", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content:
+          "Tool response:\n<tool_response>\n<path>/tmp/example.txt</path>\n<content>Hello</content>\n</tool_response>",
+      },
+    ])
+  })
+})
+
+describe("ProviderTransform.message - Cerebras reasoning replay", () => {
+  test("Cerebras GLM rewrites reasoning blocks into <think> text", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "Let me think about this..." },
+          {
+            type: "tool-call",
+            toolCallId: "test",
+            toolName: "bash",
+            input: { command: "echo hello" },
+          },
+          { type: "text", text: "Done" },
+        ],
+      },
+    ] as any[]
+
+    const result = ProviderTransform.message(
+      msgs,
+      {
+        id: ModelID.make("cerebras/zai-glm-4.7"),
+        providerID: ProviderID.make("cerebras"),
+        api: {
+          id: "zai-glm-4.7",
+          url: "https://api.cerebras.ai/v1",
+          npm: "@ai-sdk/cerebras",
+        },
+        name: "Z.AI GLM-4.7",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: false,
+        },
+        cost: {
+          input: 0.001,
+          output: 0.002,
+          cache: { read: 0.0001, write: 0.0002 },
+        },
+        limit: {
+          context: 128000,
+          output: 4096,
+        },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2026-01-10",
+      },
+      {},
+    )
+
+    expect(result[0].content).toEqual([
+      { type: "text", text: "<think>Let me think about this...</think>" },
+      {
+        type: "tool-call",
+        toolCallId: "test",
+        toolName: "bash",
+        input: { command: "echo hello" },
+      },
+      { type: "text", text: "Done" },
+    ])
+    expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBeUndefined()
+  })
+
+  test("Cerebras gpt-oss replays reasoning as plain assistant text", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "First, I should think it through." },
+          { type: "text", text: "Answer" },
+        ],
+      },
+    ] as any[]
+
+    const result = ProviderTransform.message(
+      msgs,
+      {
+        id: ModelID.make("cerebras/gpt-oss-120b"),
+        providerID: ProviderID.make("cerebras"),
+        api: {
+          id: "gpt-oss-120b",
+          url: "https://api.cerebras.ai/v1",
+          npm: "@ai-sdk/cerebras",
+        },
+        name: "GPT OSS 120B",
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: false,
+        },
+        cost: {
+          input: 0.001,
+          output: 0.002,
+          cache: { read: 0.0001, write: 0.0002 },
+        },
+        limit: {
+          context: 128000,
+          output: 4096,
+        },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2025-08-05",
+      },
+      {},
+    )
+
+    expect(result[0].content).toEqual([
+      { type: "text", text: "First, I should think it through." },
+      { type: "text", text: "Answer" },
+    ])
+    expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBeUndefined()
+  })
+})
+
+describe("ProviderTransform.message - OpenAI-compatible reasoning replay", () => {
+  test.each([
+    {
+      id: "opencode/kimi-k2.6",
+      apiId: "kimi-k2.6",
+      name: "Kimi K2.6",
+    },
+    {
+      id: "opencode/glm-4.7",
+      apiId: "glm-4.7",
+      name: "GLM-4.7",
+    },
+  ])("$name with tool calls includes reasoning_content in providerOptions", ({ id, apiId }) => {
+    const msgs = [
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "Let me think about this..." },
+          {
+            type: "tool-call",
+            toolCallId: "test",
+            toolName: "bash",
+            input: { command: "echo hello" },
+          },
+          { type: "text", text: "Done" },
+        ],
+      },
+    ] as any[]
+
+    const result = ProviderTransform.message(
+      msgs,
+      {
+        id: ModelID.make(id),
+        providerID: ProviderID.make("opencode"),
+        api: {
+          id: apiId,
+          url: "https://opencode.ai/zen/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+        name: apiId,
+        capabilities: {
+          temperature: true,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: {
+            field: "reasoning_content",
+          },
+        },
+        cost: {
+          input: 0.001,
+          output: 0.002,
+          cache: { read: 0.0001, write: 0.0002 },
+        },
+        limit: {
+          context: 128000,
+          output: 4096,
+        },
+        status: "active",
+        options: {},
+        headers: {},
+        release_date: "2026-04-21",
+      },
+      {},
+    )
+
+    expect(result[0].content).toEqual([
+      {
+        type: "tool-call",
+        toolCallId: "test",
+        toolName: "bash",
+        input: { command: "echo hello" },
+      },
+      { type: "text", text: "Done" },
+    ])
+    expect(result[0].providerOptions?.openaiCompatible?.reasoning_content).toBe("Let me think about this...")
   })
 })
 
@@ -3807,5 +4222,136 @@ describe("ProviderTransform.providerOptions - ai-gateway-provider", () => {
     // which @ai-sdk/openai-compatible never reads, silently dropping reasoningEffort.
     const result = ProviderTransform.providerOptions(createModel(), { reasoningEffort: "high" })
     expect(result).toEqual({ openaiCompatible: { reasoningEffort: "high" } })
+  })
+})
+
+describe("ProviderTransform.options - extraBody propagation", () => {
+  // Regression coverage for #13584 / #23995 / #24264: users of OpenAI-compatible
+  // servers (vLLM, SGLang, NVIDIA NIM, direct DashScope) must be able to set
+  // server-specific chat-completions body fields (e.g. `chat_template_kwargs`)
+  // via `provider.<id>.options.extraBody` in opencode.json. Until this fix,
+  // the field was permitted by the rest record on the schema but never read.
+  const sessionID = "test-session-extra-body"
+
+  const vllmModel = {
+    id: "vllm-local/qwen3.6-35b",
+    providerID: "vllm-local",
+    api: {
+      id: "qwen3.6-35b",
+      url: "http://localhost:8000/v1",
+      npm: "@ai-sdk/openai-compatible",
+    },
+    name: "Qwen3.6-35B (vLLM)",
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 200_000, output: 32_000 },
+    status: "active",
+    options: {},
+    headers: {},
+  } as any
+
+  test("merges extraBody fields into the result (qwen3 vLLM enable_thinking case)", () => {
+    const result = ProviderTransform.options({
+      model: vllmModel,
+      sessionID,
+      providerOptions: {
+        extraBody: { chat_template_kwargs: { enable_thinking: false } },
+      },
+    })
+    expect(result.chat_template_kwargs).toEqual({ enable_thinking: false })
+  })
+
+  test("preserves nested objects in extraBody intact", () => {
+    const result = ProviderTransform.options({
+      model: vllmModel,
+      sessionID,
+      providerOptions: {
+        extraBody: {
+          chat_template_kwargs: { enable_thinking: true, deep: { tool: "ok" } },
+          guided_json: { type: "object" },
+        },
+      },
+    })
+    expect(result.chat_template_kwargs).toEqual({ enable_thinking: true, deep: { tool: "ok" } })
+    expect(result.guided_json).toEqual({ type: "object" })
+  })
+
+  test("undefined extraBody is a no-op", () => {
+    const result = ProviderTransform.options({
+      model: vllmModel,
+      sessionID,
+      providerOptions: {},
+    })
+    expect(result.chat_template_kwargs).toBeUndefined()
+  })
+
+  test("null extraBody does not crash and is treated as a no-op", () => {
+    const result = ProviderTransform.options({
+      model: vllmModel,
+      sessionID,
+      providerOptions: { extraBody: null as any },
+    })
+    expect(result.chat_template_kwargs).toBeUndefined()
+  })
+
+  test("array extraBody is rejected (must be a plain object)", () => {
+    const result = ProviderTransform.options({
+      model: vllmModel,
+      sessionID,
+      providerOptions: { extraBody: ["chat_template_kwargs"] as any },
+    })
+    expect(result["0"]).toBeUndefined()
+    expect(result.chat_template_kwargs).toBeUndefined()
+  })
+
+  test("extraBody preserves non-overlapping fields set by other blocks", () => {
+    // Use a model that triggers an existing block (alibaba-cn enable_thinking).
+    const alibabaModel = {
+      ...vllmModel,
+      id: "alibaba-cn/qwen3-235b",
+      providerID: "alibaba-cn",
+      api: {
+        id: "qwen3-235b",
+        url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+      capabilities: { ...vllmModel.capabilities, reasoning: true },
+    }
+    const result = ProviderTransform.options({
+      model: alibabaModel as any,
+      sessionID,
+      providerOptions: { extraBody: { foo: "bar" } },
+    })
+    expect(result.enable_thinking).toBe(true) // set by alibaba-cn block
+    expect(result.foo).toBe("bar") // added by extraBody
+  })
+
+  test("extraBody overrides hardcoded fields by design (user config wins)", () => {
+    const alibabaModel = {
+      ...vllmModel,
+      id: "alibaba-cn/qwen3-235b",
+      providerID: "alibaba-cn",
+      api: {
+        id: "qwen3-235b",
+        url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+      capabilities: { ...vllmModel.capabilities, reasoning: true },
+    }
+    const result = ProviderTransform.options({
+      model: alibabaModel as any,
+      sessionID,
+      providerOptions: { extraBody: { enable_thinking: false } },
+    })
+    // Hardcoded block sets enable_thinking=true; user explicit override wins.
+    expect(result.enable_thinking).toBe(false)
   })
 })

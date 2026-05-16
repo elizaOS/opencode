@@ -97,6 +97,7 @@ export const WriteTool = Tool.define(
               exists: exists,
             },
             output,
+            args: params,
           }
         }).pipe(Effect.orDie),
     }
