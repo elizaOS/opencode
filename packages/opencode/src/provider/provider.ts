@@ -52,8 +52,7 @@ function privateIPv6(hostname: string) {
   const host = hostname.toLowerCase()
   if (host === "::1") return true
   if (host.startsWith("fc") || host.startsWith("fd")) return true
-  if (host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb"))
-    return true
+  if (host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb")) return true
   return false
 }
 
@@ -107,6 +106,14 @@ function shouldUseCopilotResponsesApi(modelID: string): boolean {
   return Number(match[1]) >= 5 && !modelID.startsWith("gpt-5-mini")
 }
 
+function configuredProviderEndpoint(provider: { options?: Record<string, unknown> } | undefined): string | undefined {
+  const endpoint = provider?.options?.endpoint
+  if (typeof endpoint === "string" && endpoint) return endpoint
+  const baseURL = provider?.options?.baseURL
+  if (typeof baseURL === "string" && baseURL) return baseURL
+  return undefined
+}
+
 function defaultOpenAICompatibleInterleaved(
   apiNpm: string,
   apiID: string,
@@ -116,9 +123,7 @@ function defaultOpenAICompatibleInterleaved(
 
   const id = apiID.toLowerCase()
   const usesReasoningContent =
-    id.includes("deepseek") ||
-    id.includes("kimi") ||
-    /(^|[/:])glm-(4\.7|5(?:\.1)?|5v)(?:[^a-z0-9]|$)/.test(id)
+    id.includes("deepseek") || id.includes("kimi") || /(^|[/:])glm-(4\.7|5(?:\.1)?|5v)(?:[^a-z0-9]|$)/.test(id)
 
   return usesReasoningContent ? { field: "reasoning_content" } : false
 }
@@ -1388,15 +1393,19 @@ export const layer = Layer.effect(
             const reasoning = model.reasoning ?? existingModel?.capabilities.reasoning ?? false
             const defaultInterleaved = defaultOpenAICompatibleInterleaved(apiNpm, apiID, reasoning)
             const existingInterleaved = existingModel?.capabilities.interleaved
-            const interleaved =
-              model.interleaved ??
-              (existingInterleaved ? existingInterleaved : defaultInterleaved)
+            const interleaved = model.interleaved ?? (existingInterleaved ? existingInterleaved : defaultInterleaved)
             const parsedModel: Model = {
               id: ModelID.make(modelID),
               api: {
                 id: apiID,
                 npm: apiNpm,
-                url: model.provider?.api ?? provider?.api ?? existingModel?.api.url ?? modelsDev[providerID]?.api ?? "",
+                url:
+                  model.provider?.api ??
+                  configuredProviderEndpoint(provider) ??
+                  provider?.api ??
+                  existingModel?.api.url ??
+                  modelsDev[providerID]?.api ??
+                  "",
               },
               status: model.status ?? existingModel?.status ?? "active",
               name,

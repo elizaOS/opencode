@@ -67,8 +67,13 @@ const REASONING_REPLAY_FIELDS = ["reasoning_content", "reasoning_details"] as co
 function isCerebrasCompatibleEndpoint(model: Provider.Model) {
   if (model.api.npm === "@ai-sdk/cerebras") return true
   const providerID = model.providerID.toLowerCase()
-  const apiURL = model.api.url.toLowerCase()
-  return providerID.includes("cerebras") || apiURL.includes("cerebras")
+  if (providerID.includes("cerebras")) return true
+  try {
+    const hostname = new URL(model.api.url).hostname.toLowerCase()
+    return hostname === "cerebras.ai" || hostname.endsWith(".cerebras.ai")
+  } catch {
+    return false
+  }
 }
 
 function cerebrasReasoningText(text: string, model: Provider.Model) {
