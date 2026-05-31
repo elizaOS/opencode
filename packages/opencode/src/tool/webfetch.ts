@@ -10,6 +10,41 @@ const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
 const MAX_TIMEOUT = 120 * 1000 // 2 minutes
 
+// SSRF guard: refuse fetches to loopback / private / link-local / metadata
+// hosts. webfetch can be driven by autonomous (and potentially prompt-injected)
+// agents, so a bare GET must not be usable to reach internal services (a local
+// dev/control server, cloud metadata at 169.254.169.254, private LAN hosts).
+function isBlockedFetchHost(rawHost: string): boolean {
+  const host = rawHost
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .trim()
+  if (!host) return true
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    host === "0.0.0.0" ||
+    host === "::1" ||
+    host === "::"
+  )
+    return true
+  // IPv6 literals only (contain a colon): unique-local (fc00::/7) + link-local (fe80::/10)
+  if (host.includes(":") && (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:"))) return true
+  // IPv4 dotted-quad ranges
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (m) {
+    const a = Number(m[1])
+    const b = Number(m[2])
+    if (a === 127 || a === 10 || a === 0) return true // loopback / private / this-host
+    if (a === 169 && b === 254) return true // link-local + cloud metadata (169.254.169.254)
+    if (a === 192 && b === 168) return true // private
+    if (a === 172 && b >= 16 && b <= 31) return true // private
+  }
+  return false
+}
+
 export const Parameters = Schema.Struct({
   url: Schema.String.annotate({ description: "The URL to fetch content from" }),
   format: Schema.Literals(["text", "markdown", "html"])
@@ -34,6 +69,18 @@ export const WebFetchTool = Tool.define(
         Effect.gen(function* () {
           if (!params.url.startsWith("http://") && !params.url.startsWith("https://")) {
             throw new Error("URL must start with http:// or https://")
+          }
+
+          {
+            let host = ""
+            try {
+              host = new URL(params.url).hostname
+            } catch {
+              throw new Error(`Invalid URL: ${params.url}`)
+            }
+            if (isBlockedFetchHost(host)) {
+              throw new Error(`Refusing to fetch internal/private/loopback host: ${host}`)
+            }
           }
 
           yield* ctx.ask({
