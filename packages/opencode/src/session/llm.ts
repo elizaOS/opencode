@@ -100,19 +100,7 @@ const live: Layer.Layer<
       // TODO: move this to a proper hook
       const isOpenaiOauth = item.id === "openai" && info?.type === "oauth"
 
-      const system: string[] = []
-      system.push(
-        [
-          // use agent prompt otherwise provider prompt
-          ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
-          // any custom prompt passed into this call
-          ...input.system,
-          // any custom prompt from last user message
-          ...(input.user.system ? [input.user.system] : []),
-        ]
-          .filter((x) => x)
-          .join("\n"),
-      )
+      const system = systemParts(input)
 
       const header = system[0]
       yield* plugin.trigger(
@@ -389,6 +377,7 @@ const live: Layer.Layer<
                 if (Array.isArray(params.messages)) {
                   params.messages = ProviderTransform.message(params.messages, input.model, options)
                 }
+                params.tools = ProviderTransform.tools(params.tools, input.model)
                 return params
               },
             },
@@ -444,6 +433,12 @@ function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" 
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+}
+
+export function systemParts(input: Pick<StreamInput, "agent" | "model" | "system" | "user">) {
+  const header = (input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)).filter((x) => x).join("\n")
+  const rest = [...input.system, ...(input.user.system ? [input.user.system] : [])].filter((x) => x).join("\n")
+  return [header, rest].filter((x) => x)
 }
 
 // Check if messages contain any tool-call content

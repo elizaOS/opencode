@@ -3126,6 +3126,65 @@ describe("ProviderTransform.message - cache control on gateway", () => {
       },
     })
   })
+
+  test("anthropic tool caching marks only the last tool", () => {
+    const model = createModel({
+      providerID: "anthropic",
+      api: {
+        id: "claude-sonnet-4",
+        url: "https://api.anthropic.com",
+        npm: "@ai-sdk/anthropic",
+      },
+    })
+    const tools = [
+      { name: "read", description: "Read files" },
+      { name: "edit", description: "Edit files" },
+    ]
+
+    const result = ProviderTransform.tools(tools, model) as any[]
+
+    expect(result[0].providerOptions).toBeUndefined()
+    expect(result[1].providerOptions).toMatchObject({
+      anthropic: {
+        cacheControl: {
+          type: "ephemeral",
+        },
+      },
+      openrouter: {
+        cacheControl: {
+          type: "ephemeral",
+        },
+      },
+      bedrock: {
+        cachePoint: {
+          type: "default",
+        },
+      },
+      alibaba: {
+        cacheControl: {
+          type: "ephemeral",
+        },
+      },
+    })
+  })
+
+  test("non-anthropic tool caching is untouched", () => {
+    const model = createModel({
+      providerID: "openai",
+      api: {
+        id: "gpt-5.2",
+        url: "https://api.openai.com",
+        npm: "@ai-sdk/openai",
+      },
+      id: "gpt-5.2",
+    })
+    const tools = [
+      { name: "read", description: "Read files" },
+      { name: "edit", description: "Edit files" },
+    ]
+
+    expect(ProviderTransform.tools(tools, model)).toBe(tools)
+  })
 })
 
 describe("ProviderTransform.variants", () => {
