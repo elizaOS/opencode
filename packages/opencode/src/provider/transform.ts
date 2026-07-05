@@ -487,11 +487,22 @@ function normalizeMessages(
   return msgs
 }
 
-function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
-  const system = msgs.filter((msg) => msg.role === "system").slice(0, 2)
-  const final = msgs.filter((msg) => msg.role !== "system").slice(-2)
+function shouldApplyCaching(model: Provider.Model) {
+  return (
+    (model.providerID === "anthropic" ||
+      model.providerID === "google-vertex-anthropic" ||
+      model.api.id.includes("anthropic") ||
+      model.api.id.includes("claude") ||
+      model.id.includes("anthropic") ||
+      model.id.includes("claude") ||
+      model.api.npm === "@ai-sdk/anthropic" ||
+      model.api.npm === "@ai-sdk/alibaba") &&
+    model.api.npm !== "@ai-sdk/gateway"
+  )
+}
 
-  const providerOptions = {
+function cacheProviderOptions() {
+  return {
     anthropic: {
       cacheControl: { type: "ephemeral" },
     },
@@ -511,6 +522,13 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
       cacheControl: { type: "ephemeral" },
     },
   }
+}
+
+function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
+  const system = msgs.filter((msg) => msg.role === "system").slice(0, 1)
+  const final = msgs.filter((msg) => msg.role !== "system").slice(-2)
+
+  const providerOptions = cacheProviderOptions()
 
   for (const msg of unique([...system, ...final])) {
     const useMessageLevelOptions =
@@ -579,17 +597,7 @@ function unsupportedParts(msgs: ModelMessage[], model: Provider.Model): ModelMes
 export function message(msgs: ModelMessage[], model: Provider.Model, options: Record<string, unknown>) {
   msgs = unsupportedParts(msgs, model)
   msgs = normalizeMessages(msgs, model, options)
-  if (
-    (model.providerID === "anthropic" ||
-      model.providerID === "google-vertex-anthropic" ||
-      model.api.id.includes("anthropic") ||
-      model.api.id.includes("claude") ||
-      model.id.includes("anthropic") ||
-      model.id.includes("claude") ||
-      model.api.npm === "@ai-sdk/anthropic" ||
-      model.api.npm === "@ai-sdk/alibaba") &&
-    model.api.npm !== "@ai-sdk/gateway"
-  ) {
+  if (shouldApplyCaching(model)) {
     msgs = applyCaching(msgs, model)
   }
 
@@ -621,6 +629,35 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
   }
 
   return msgs
+}
+
+export function tools<T>(items: T, model: Provider.Model): T {
+  if (!shouldApplyCaching(model) || !items) return items
+
+  const providerOptions = cacheProviderOptions()
+  const apply = (item: any) => ({
+    ...item,
+    providerOptions: mergeDeep(item.providerOptions ?? {}, providerOptions),
+  })
+
+  if (Array.isArray(items)) {
+    if (items.length === 0) return items
+    const next = [...items]
+    next[next.length - 1] = apply(next[next.length - 1])
+    return next as T
+  }
+
+  if (typeof items === "object") {
+    const entries = Object.entries(items as Record<string, unknown>)
+    if (entries.length === 0) return items
+    const [name, item] = entries[entries.length - 1]
+    return {
+      ...(items as Record<string, unknown>),
+      [name]: apply(item),
+    } as T
+  }
+
+  return items
 }
 
 export function temperature(model: Provider.Model) {

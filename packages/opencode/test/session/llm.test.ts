@@ -35,6 +35,38 @@ async function drain(input: LLM.StreamInput, ctx: InstanceContext) {
   })
 }
 
+describe("session.llm.systemParts", () => {
+  test("splits cacheable static prompt from volatile system content", () => {
+    const model = {
+      id: "anthropic/claude-sonnet-4",
+      providerID: "anthropic",
+      api: {
+        id: "claude-sonnet-4",
+        url: "https://api.anthropic.com",
+        npm: "@ai-sdk/anthropic",
+      },
+      capabilities: {
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+      },
+    } as any
+    const parts = LLM.systemParts({
+      model,
+      agent: { name: "test", mode: "primary", prompt: "STATIC PROMPT", options: {} } as any,
+      system: ["Today's date is 2026-07-05.", "cwd is /tmp/project"],
+      user: { system: "USER SYSTEM" } as any,
+    })
+
+    expect(parts).toEqual(["STATIC PROMPT", "Today's date is 2026-07-05.\ncwd is /tmp/project\nUSER SYSTEM"])
+
+    const messages = parts.map((content) => ({ role: "system", content })) as ModelMessage[]
+    const transformed = ProviderTransform.message(messages, model, {}) as any[]
+
+    expect(transformed[0].providerOptions?.anthropic?.cacheControl).toEqual({ type: "ephemeral" })
+    expect(transformed[1].providerOptions).toBeUndefined()
+  })
+})
+
 describe("session.llm.hasToolCalls", () => {
   test("returns false for empty messages array", () => {
     expect(LLM.hasToolCalls([])).toBe(false)
@@ -1160,6 +1192,9 @@ describe("session.llm.stream", () => {
         const body = capture.body
 
         expect(capture.url.pathname.endsWith("/messages")).toBe(true)
+        const tools = body.tools as any[]
+        expect(tools[0].cache_control).toBeUndefined()
+        expect(tools[tools.length - 1].cache_control).toEqual({ type: "ephemeral" })
         expect(body.messages).toStrictEqual([
           {
             role: "user",
