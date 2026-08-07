@@ -386,7 +386,6 @@ experimentalModels.instance(
   { config: alphaProviderConfig },
 )
 
-
 test("custom OpenAI-compatible reasoning_content models default interleaved reasoning field", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
@@ -862,6 +861,44 @@ test("provider api field sets model api.url", async () => {
       const providers = await list(ctx)
       // api field is stored on model.api.url, used by getSDK to set baseURL
       expect(providers[ProviderID.make("custom-api")].models["model-1"].api.url).toBe("https://api.example.com/v1")
+    },
+  })
+})
+
+test("provider baseURL sets model api.url when provider api is not declared", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        path.join(dir, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: {
+            "custom-endpoint": {
+              name: "Custom Endpoint",
+              npm: "@ai-sdk/openai-compatible",
+              env: [],
+              models: {
+                "model-1": {
+                  name: "Model 1",
+                  tool_call: true,
+                  limit: { context: 8000, output: 2000 },
+                },
+              },
+              options: {
+                baseURL: "https://api.example.com/v1",
+                apiKey: "test-key",
+              },
+            },
+          },
+        }),
+      )
+    },
+  })
+  await withTestInstance({
+    directory: tmp.path,
+    fn: async (ctx) => {
+      const providers = await list(ctx)
+      expect(providers[ProviderID.make("custom-endpoint")].models["model-1"].api.url).toBe("https://api.example.com/v1")
     },
   })
 })
